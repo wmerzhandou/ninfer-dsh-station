@@ -17,13 +17,13 @@
 ## 构建步骤
 
 ```bash
-# 1. 获取源码（版本已钉死，补丁适用）
+# 1. 获取源码（版本已钉死）
 git clone https://github.com/Don-Chad/ninfer-3090.git ninfer-src
 cd ninfer-src
 git checkout d8c2925          # 本方案验证过的提交（2026-10 master）
 
-# 2. 应用本仓库 patches/ 下的 8 个补丁（平台无关运行时、链接组、编译器修复、win32 适配等）
-git apply /path/to/ninfer-dsh-station/build/patches/*.patch
+# 2. 不要打任何补丁：上游已等价合入全部修正。
+#    build/patches-legacy-daily/ 下 8 个补丁是旧日常版引擎线的历史文件，仅参考，打了会失败。
 
 # 3. 把本仓库构建脚本放进源码树再运行（脚本要求在含 CMakeLists.txt 的源码根执行）
 cp /path/to/ninfer-dsh-station/build/build-full.sh .
