@@ -29,22 +29,33 @@ INSTALL_DIR=$(pwd)
 mkdir -p ~/.local/bin ~/.config/systemd/user ~/bin
 cp deploy/bin/ninfer-mode deploy/bin/ninfer-ctl deploy/bin/ninfer-mon deploy/bin/dsh-launch.sh ~/.local/bin/
 chmod +x ~/.local/bin/* deploy/engine/run-full.sh
-cp deploy/systemd/ninfer-serve-full.service ~/.config/systemd/user/
+cp deploy/systemd/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-# 预期：daemon-reload 无报错
+# 预期：daemon-reload 无报错；ls ~/.config/systemd/user/ 能看到 4 个 .service
 ```
 
 把 `INSTALL_DIR` 记进 `~/.bashrc`：`echo "export NINFER_STATION=$INSTALL_DIR" >> ~/.bashrc`
 
-## 阶段 2：引擎
+## 阶段 2：引擎（二选一）
 
-两条路任选：
+**A. 直接下载 Release 二进制（推荐，跳过编译）**：
 
-**A. 二进制就绪**（用户已提供 `dist/ninfer-serve-full`，568MB）：确认
-`deploy/engine/run-full.sh` 里 `BIN`/`MODEL` 路径正确（可用 `NINFER_MODEL` 环境变量覆盖模型路径），
-并确认 `ROOTFS`（运行库 rootfs，随引擎构建产出，含 CUDA 运行库）路径存在。
-**B. 源码构建**：按 `build/BUILD.md` 从上游源码 + `build/patches/` 构建，
-产出 `dist/ninfer-serve-full` 与 rootfs 后回到阶段 2A。构建约 30–60 分钟，需要 CUDA 工具链。
+```bash
+mkdir -p deploy/engine/dist build
+cd build
+curl -LO https://github.com/wmerzhandou/ninfer-dsh-station/releases/download/v1.0.0-engine/ninfer-serve-full-rtx3090.tar.zst
+tar -I zstd -xf ninfer-serve-full-rtx3090.tar.zst
+# 产物：rootfs/（运行库）→ 移到 build/rootfs；dist/ninfer-serve-full → 移到 deploy/engine/dist/
+mv rootfs ../build/rootfs 2>/dev/null || true
+mv dist/ninfer-serve-full ../deploy/engine/dist/
+# 验证
+deploy/engine/dist/ninfer-serve-full --version
+```
+
+**B. 源码构建**（需要 CUDA 12.8 工具链，30–60 分钟）：按 `build/BUILD.md`，
+基于 `Don-Chad/ninfer-3090 @ d8c2925` + `build/patches/` 8 个补丁。
+
+两条路都需要模型文件（见 README 前提条件）：`export NINFER_MODEL=/path/to/qwen3_8_27b.ninfer`
 
 ## 阶段 3：网关（模型路由 + LAN 访问）
 
@@ -67,10 +78,14 @@ cp deploy/bili/billion-context.json.example ~/.config/billion-context/billion-co
 npm i -g billion-context   # 提供 bili CLI；或按上游 README 安装
 ```
 
-## 阶段 5：dsh 配置
+## 阶段 5：dsh 安装与配置
 
 ```bash
-# 已装 dsh 后，把三个 profile 的 cordis.patch.yml 合并/替换为模板（保留用户已有的其它 provider）：
+# 5.1 安装 dsh CLI（Node.js ≥20 前提；nvm 或发行版自带均可）
+npm i -g @deepseek-ai/dsh
+dsh --version   # 预期输出版本号
+
+# 5.2 把三个 profile 的 cordis.patch.yml 合并/替换为模板（保留用户已有的其它 provider）：
 #   deploy/dsh/cordis.patch.web.yml     → ~/.dsh/profiles/web/cordis.patch.yml
 #   deploy/dsh/cordis.patch.tui.yml     → ~/.dsh/profiles/dsh-tui/cordis.patch.yml
 #   deploy/dsh/cordis.patch.headless.yml → ~/.dsh/profiles/headless/cordis.patch.yml
@@ -147,7 +162,8 @@ systemctl --user enable ninfer-serve-full codex-model-gateway billion-context ds
 
 | 现象 | 查 |
 |---|---|
-| 引擎起不来 | `journalctl --user -u ninfer-serve-full -n 50`（常见：rootfs 路径错/显存被占） |
+| 引擎起不来 | `journalctl --user -u ninfer-serve-full -n 50`（常见：rootfs 路径错/显存被占/模型路径错） |
+| `ninfer-mode daily` 报单元不存在 | 正常：日常引擎（180K 版）未随本仓库发布，属可选组件；满血版就是默认日常 |
 | 502 agw-proxy-failure | dsh-web 是否带 NINFER_API_KEY 环境启动（勿裸命令） |
 | 网关 401 | LAN 请求带 `Authorization: Bearer $(cat ~/.codex/gateway.token)` |
 | bili model_not_found | 重跑 `ninfer-mode full` 对齐窗口与注册表 |

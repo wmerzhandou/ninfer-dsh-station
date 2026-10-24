@@ -1,0 +1,17 @@
+[Unit]
+Description=DeepSeek Harness web UI (:13080, Clash-proxy-aware)
+After=network.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=NINFER_API_KEY=dummy
+# 需要代理访问外网时，在本文件同级建 dsh-web.service.d/override.conf 添加 Environment=HTTP_PROXY=...
+WorkingDirectory=%h
+ExecStart=%h/.local/bin/dsh web --port 13080 --no-open
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

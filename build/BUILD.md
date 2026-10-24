@@ -17,9 +17,10 @@
 ## 构建步骤
 
 ```bash
-# 1. 获取上游源码（版本以 build-full.sh 顶部注明为准），进入源码树
-git clone <上游 ninfer 仓库地址> ninfer-src
+# 1. 获取源码（版本已钉死，补丁适用）
+git clone https://github.com/Don-Chad/ninfer-3090.git ninfer-src
 cd ninfer-src
+git checkout d8c2925          # 本方案验证过的提交（2026-10 master）
 
 # 2. 应用本仓库 patches/ 下的 8 个补丁（平台无关运行时、链接组、编译器修复、win32 适配等）
 git apply /path/to/ninfer-dsh-station/build/patches/*.patch

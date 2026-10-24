@@ -51,7 +51,7 @@ cp config/config.env.example config/config.env   # 改 LAN_IP 和模型路径
 | 系统 | Ubuntu 22.04/24.04，NVIDIA 驱动 ≥550 |
 | 内存 | 32GB 底线，64GB 宽裕 |
 | 磁盘 | 60GB+（模型 18GB + 系统） |
-| 模型 | `qwen3_8_27b.ninfer`（约 18GB，由 ninfer 官方件转换；引擎构建见 [build/BUILD.md](build/BUILD.md)） |
+| 模型 | `qwen3_8_27b.ninfer`（约 18GB，由 ninfer 官方件转换；引擎二进制可直接下 [Release](https://github.com/wmerzhandou/ninfer-dsh-station/releases/tag/v1.0.0-engine)，或按 [build/BUILD.md](build/BUILD.md) 源码构建） |
 
 ## 目录
 
