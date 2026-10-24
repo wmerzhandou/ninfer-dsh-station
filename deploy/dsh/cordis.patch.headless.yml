@@ -1,0 +1,75 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: ninfer-local
+    model: qwen3.8-27b-ninfer
+    reasoningEffort: low
+- id: llm-pi-ai
+  config:
+    providers:
+      ninfer-local:
+        displayName: Ninfer Qwen3.8-27B (本机 3090 via bili)
+        apiKeyEnv: NINFER_API_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:18003/v1
+        defaultInput:
+          - text
+          - image
+        models:
+          - id: qwen3.8-27b-ninfer
+            name: Qwen3.8-27B NInfer Q4
+            contextWindow: 245760
+            maxTokens: 16384
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: xhigh
+
+      ninfer-full:
+        displayName: Ninfer FULL (3090 满血 249K/236tok/s)
+        apiKeyEnv: NINFER_API_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:8092/v1
+        defaultInput:
+          - text
+          - image
+        models:
+          - id: qwen3.8-27b-full
+            name: Qwen3.8-27B FULL 249K
+            contextWindow: 245760
+            maxTokens: 16384
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: xhigh
+
+- id: llm-deepseek
+  name: "@deepseek-ai/dsh-llm-deepseek-api-key"
+  config:
+    models:
+      - id: deepseek-flash
+        name: DeepSeek-V4.1-Flash
+        description: 官方 V4.1 Flash，原生多模态（支持图片输入）
+        contextWindow: 1000000
+        maxTokens: 384000
+        inputModalities:
+          - text
+          - image
+      - id: deepseek-v4-pro
+        name: DeepSeek-V4-Pro
+        contextWindow: 1000000
+        maxTokens: 384000
+      - id: deepseek-v4-flash
+        name: DeepSeek-V4-Flash
+        contextWindow: 1000000
+        maxTokens: 384000
+      - id: deepseek-v4-flash-vision-exp
+        name: DeepSeek-V4-Flash-Vision-Exp
+        contextWindow: 1000000
+        maxTokens: 384000
+        inputModalities:
+          - text
+          - image

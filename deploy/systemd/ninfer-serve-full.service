@@ -1,0 +1,14 @@
+[Unit]
+Description=NInfer FULL engine :8092 (249K 满血, DFlash2 K=7 + ngram + 视觉overlay)
+# 与 ninfer-serve(:8091 日常) 显存互斥，由 ninfer-mode 统一切换，勿同时启动
+
+[Service]
+Type=simple
+ExecStart=/bin/bash %h/ninfer-dsh-station/deploy/engine/run-full.sh
+Restart=on-failure
+RestartSec=5
+# 引擎权重加载+图捕获约 100 秒，给足超时
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

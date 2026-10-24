@@ -1,0 +1,43 @@
+--- a/apps/cli/main.cpp	2026-10-19 17:22:00.000000000 +0800
++++ b/apps/cli/main.cpp	2026-10-21 01:42:12.195719901 +0800
+@@ -316,6 +316,7 @@
+ // Default OFF, like every other switch in this tree: unset / empty / "0" all mean off, and the OFF
+ // path does nothing but print its own self-attestation line.
+ 
++#ifdef _WIN32
+ struct PowerThrottlingState {
+     unsigned long version;
+     unsigned long control_mask;
+@@ -370,6 +371,32 @@
+                  power_throttling_verdict());
+ }
+ 
++#else
++// LOCAL FORK (Linux port): EcoQoS -- the background-process execution throttle this block opts
++// out of -- is a Windows scheduler policy with no Linux counterpart. Linux CFS does not throttle
++// a process for being in the background, so there is nothing to opt out of and no emulation is
++// added: pretending otherwise would only log a lie. The switch is still parsed and still defaults
++// to off, and the off path still prints its self-attestation line, so launchers see the same
++// shape of output on both platforms.
++
++const char* power_throttling_verdict() { return "NOT_APPLICABLE"; }
++
++bool power_exempt_requested() {
++    static const bool requested = [] {
++        const char* value = std::getenv("NINFER_FLASH_NEXT_POWER_EXEMPT");
++        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
++    }();
++    return requested;
++}
++
++void apply_power_exemption_if_requested() {
++    std::fprintf(stderr, "flash_next power_exempt=%d set=%s verdict=%s\n",
++                 power_exempt_requested() ? 1 : 0,
++                 power_exempt_requested() ? "NOT_SUPPORTED" : "not_requested",
++                 power_throttling_verdict());
++}
++#endif
++
+ } // namespace
+ 
+ int main(int argc, char** argv) {

@@ -1,0 +1,28 @@
+--- a/src/models/qwen3_8_flash_next/impl/moe_kernels.cu	2026-10-19 17:22:00.000000000 +0800
++++ b/src/models/qwen3_8_flash_next/impl/moe_kernels.cu	2026-10-20 22:46:47.340686715 +0800
+@@ -799,7 +799,11 @@
+     const int warp_n = warp & 1;  // 0 or 1 (tokens 0..7 or tokens 8..15)
+     const int lane   = tid & 31;
+ 
+-    extern __shared__ alignas(16) std::uint8_t s_dyn_mem[];
++    // LOCAL FORK (Linux port): alignas() cannot decorate an extern __shared__ array -- nvcc rejects
++    // it with "attribute does not apply to any entity" (MSVC's nvcc does not). The qualifier is also
++    // redundant: CUDA guarantees dynamic shared memory is 16-byte aligned, which is why every offset
++    // arithmetic below can stay byte-based unchanged.
++    extern __shared__ std::uint8_t s_dyn_mem[];
+     auto* s_w_codes    = s_dyn_mem;                          // 32 * 1280 = 40960 bytes
+     auto* s_w_scales   = s_dyn_mem + 40960;                  // 32 * 164 = 5248 bytes
+     auto* s_a_codes_0  = s_dyn_mem + 40960 + 5248;           // 16 * 1280 = 20480 bytes
+@@ -1158,7 +1162,11 @@
+     const int warp_n     = (warp_n_grp << 1) | warp_n_sub; // 0, 1, 2, 3 (tok 0..7, 8..15, 16..23, 24..31)
+     const int lane       = tid & 31;
+ 
+-    extern __shared__ alignas(16) std::uint8_t s_dyn_mem[];
++    // LOCAL FORK (Linux port): alignas() cannot decorate an extern __shared__ array -- nvcc rejects
++    // it with "attribute does not apply to any entity" (MSVC's nvcc does not). The qualifier is also
++    // redundant: CUDA guarantees dynamic shared memory is 16-byte aligned, which is why every offset
++    // arithmetic below can stay byte-based unchanged.
++    extern __shared__ std::uint8_t s_dyn_mem[];
+     auto* s_w_codes  = s_dyn_mem;                                           // 32 * 1280 = 40960 bytes
+     auto* s_w_scales = s_dyn_mem + 40960;                                   // 32 * 164  =  5248 bytes
+     auto* s_a_codes  = s_dyn_mem + 40960 + 5248;                           // 32 * 1280 = 40960 bytes

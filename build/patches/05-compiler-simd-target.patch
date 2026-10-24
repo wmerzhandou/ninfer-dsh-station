@@ -1,0 +1,28 @@
+--- a/src/models/qwen3_8_flash_next/impl/cpu_expert_nvfp4.h	2026-10-19 17:22:00.000000000 +0800
++++ b/src/models/qwen3_8_flash_next/impl/cpu_expert_nvfp4.h	2026-10-20 21:11:14.017915568 +0800
+@@ -32,6 +32,14 @@
+ // included by a .cu (the tree has been bitten by host/device header mixing, and one TU compile is the
+ // only thing that proves it -- see 立项书 sec-3.2).
+ 
++// LOCAL FORK (Linux port): the intrinsics used below are always_inline with a hard target
++// requirement. MSVC assumes the target is available; GCC needs the -m flags. This pragma grants
++// codegen permission for the whole header. It changes no logic and no arithmetic. Instructions are
++// still only *executed* on a core where isa_flags() (CPUID) reported support -- see best_isa().
++#if defined(__GNUC__) && !defined(_MSC_VER) && (defined(__x86_64__) || defined(__i386__))
++#pragma GCC target("ssse3,sse4.1,avx,avx2,avxvnni,fma")
++#endif
++
+ #include <array>
+ #include <atomic>
+ #include <chrono>
+@@ -483,7 +491,9 @@
+ 
+ // Same spelling as ops/common/math.cuh:38 (the compiled branch: NINFER_SFU_SIGMOID_SILU is OFF),
+ // transcribed to the host with std::expf. Kernel and oracle share this exact expression.
+-[[nodiscard]] inline float silu_f32(float x) noexcept { return x / (1.0F + std::expf(-x)); }
++// LOCAL FORK (Linux port): std::expf is an MSVC extension; ISO C++ provides std::exp,
++// whose float overload returns float, so the arithmetic is bit-identical.
++[[nodiscard]] inline float silu_f32(float x) noexcept { return x / (1.0F + std::exp(-x)); }
+ 
+ // ---- diagnostic section: oracles, references, metrics, probe runner (never on the hot path) -----
+ 

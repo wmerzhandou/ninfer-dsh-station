@@ -1,0 +1,31 @@
+--- a/apps/CMakeLists.txt	2026-10-19 17:22:00.000000000 +0800
++++ b/apps/CMakeLists.txt	2026-10-21 01:47:29.288124944 +0800
+@@ -24,8 +24,12 @@
+   cli/main.cpp
+   cli/options.cpp)
+ ninfer_internal_includes(ninfer)
++# LOCAL FORK (Linux port): same engine <-> model_runtime static-library cycle as ninfer-serve below.
++# The CLI reaches qwen3_8_flash_next Program code through ninfer_engine, so it needs the same rescan.
+ target_link_libraries(ninfer PRIVATE
++  $<LINK_GROUP:RESCAN,ninfer_engine,ninfer_model_runtime,ninfer_model_loading>
+   ninfer_engine
++  ninfer_model_loading
+   ninfer_product_logging
+   ninfer_product_prompt_input)
+ ninfer_stamp_build_id(ninfer)
+@@ -33,7 +37,15 @@
+ 
+ add_executable(ninfer-serve serve/main.cpp)
+ ninfer_internal_includes(ninfer-serve)
+-target_link_libraries(ninfer-serve PRIVATE ninfer_serve ninfer_product_logging)
++# LOCAL FORK (Linux port): ninfer_engine and ninfer_model_runtime form a static-library CYCLE --
++# qwen3_8_flash_next/impl/program.cpp (model_runtime) calls runtime::OutputConstraintState, whose
++# implementation lives in runtime/contract/structured_output.cpp (engine), while engine links
++# model_runtime. MSVC's linker hides this by rescanning archives; GNU ld makes one pass and reports
++# every such use as an undefined reference. LINK_GROUP:RESCAN is the portable expression of what the
++# MSVC linker does implicitly, so both platforms resolve the same way without touching either library.
++target_link_libraries(ninfer-serve PRIVATE
++  $<LINK_GROUP:RESCAN,ninfer_engine,ninfer_model_runtime,ninfer_model_loading>
++  ninfer_serve ninfer_product_logging)
+ ninfer_stamp_build_id(ninfer-serve)
+ ninfer_stage_runtime_dlls(ninfer-serve)

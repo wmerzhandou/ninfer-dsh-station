@@ -1,0 +1,30 @@
+--- a/src/models/qwen3_8_flash_next/impl/runtime_plan.cpp	2026-10-19 17:22:00.000000000 +0800
++++ b/src/models/qwen3_8_flash_next/impl/runtime_plan.cpp	2026-10-21 01:38:45.439176591 +0800
+@@ -125,10 +125,14 @@
+     const std::size_t cache_layers = kFullAttentionLayers +
+                                     (config.speculative_draft_tokens > 0 ? 1ULL : 0ULL);
+ 
++    // LOCAL FORK (Linux port): the rest of this function spells checked_mul<size_t>(...); these two
++    // sites relied on MSVC accepting size_t -> uint64_t implicitly. On LP64 (Linux) size_t is
++    // unsigned long while uint64_t is unsigned long long, so the deduction fails. Spelling the
++    // template argument, as every other call in this file already does, makes it portable.
+     recurrent_state_bytes = checked_add(
+-        checked_add(checked_mul(36ULL, single_gdn_conv), checked_mul(36ULL, single_gdn_ssm)),
+-        checked_add(ple_conv, checked_add(checked_mul(cache_layers, single_raw_keys),
+-                                          checked_mul(cache_layers, single_raw_pos))));
++        checked_add(checked_mul<std::size_t>(36ULL, single_gdn_conv), checked_mul<std::size_t>(36ULL, single_gdn_ssm)),
++        checked_add(ple_conv, checked_add(checked_mul<std::size_t>(cache_layers, single_raw_keys),
++                                          checked_mul<std::size_t>(cache_layers, single_raw_pos))));
+     if (config.speculative_draft_tokens > 0) {
+         recurrent_state_bytes = checked_add(recurrent_state_bytes, checked_align_up_256(
+             10'240ULL * sizeof(std::uint16_t) * resolved_state_slots));
+@@ -157,7 +161,8 @@
+     if (config.speculative_draft_tokens > 0) {
+         const auto rows = config.proposal_head == ProposalHead::Optimized
+                               ? config.draft_head_rows : 248'320U;
+-        round_tensors_bytes = checked_add(round_tensors_bytes,
++        // LOCAL FORK (Linux port): same LP64 size_t/uint64_t reason as the checked_mul sites above.
++        round_tensors_bytes = checked_add<std::size_t>(round_tensors_bytes,
+             checked_align_up_256(2'560ULL * sizeof(std::uint16_t)) +
+             checked_align_up_256(10'240ULL * sizeof(std::uint16_t)) +
+             checked_align_up_256(rows * sizeof(std::uint16_t)) + 256ULL +

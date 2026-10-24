@@ -1,0 +1,42 @@
+{
+  "port": 8787,
+  "upstream": "http://127.0.0.1:18003",
+  "providers": {
+    "http://127.0.0.1:8787": {
+      "models": {
+        "qwen3.8-27b-ninfer": {
+          "context": 245760,
+          "output": 16384
+        },
+        "qwen3.8-27b-full": {
+          "context": 245760,
+          "output": 16384
+        }
+      },
+      "compress": {
+        "modelContextLimit": 245760
+      }
+    },
+    "http://127.0.0.1:18003": {
+      "models": {
+        "qwen3.8-27b-ninfer": {
+          "context": 245760,
+          "output": 16384
+        },
+        "qwen3.8-27b-full": {
+          "context": 245760,
+          "output": 16384
+        }
+      },
+      "compress": {
+        "modelContextLimit": 245760
+      }
+    }
+  },
+  "compress": {
+    "modelContextLimit": 245760,
+    "maxContextLimit": "80%",
+    "nudgeGrowthTokens": 120000
+  },
+  "modelContextLimit": 245760
+}

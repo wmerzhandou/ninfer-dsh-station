@@ -1,0 +1,67 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# MiniMax Token Plan 接入：手工声明的 OpenAI 兼容路由（llm-pi-ai 适配器）
+# 凭据通过环境变量 MINIMAX_API_KEY 按请求解析，密钥不写入本文件。
+- id: llm-pi-ai
+  config:
+    providers:
+      ninfer-local:
+        displayName: Ninfer Qwen3.8-27B (本机 3090 via bili)
+        apiKeyEnv: NINFER_API_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:18003/v1
+        defaultInput:
+          - text
+          - image
+        models:
+          - id: qwen3.8-27b-ninfer
+            name: Qwen3.8-27B NInfer Q4
+            contextWindow: 245760
+            maxTokens: 16384
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: xhigh
+
+      ninfer-full:
+        displayName: Ninfer FULL (3090 满血 249K/236tok/s)
+        apiKeyEnv: NINFER_API_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:8092/v1
+        defaultInput:
+          - text
+          - image
+        models:
+          - id: qwen3.8-27b-full
+            name: Qwen3.8-27B FULL 249K
+            contextWindow: 245760
+            maxTokens: 16384
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: xhigh
+
+      minimax:
+        displayName: MiniMax (Token Plan)
+        apiKeyEnv: MINIMAX_API_KEY
+        api: openai-completions
+        baseURL: https://api.minimaxi.com/v1
+        compat:
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
+        models:
+          - id: MiniMax-M3
+            name: MiniMax M3
+            contextWindow: 1048576   # 1M 上下文
+            maxTokens: 32768         # 输出上限，可按需调高
+            reasoningEfforts: false  # 不下发推理档位参数，思考由服务端默认行为决定
+
+# 默认模型从 deepseek-official 改为 MiniMax-M3，开箱即可对话
+# 默认模型：本机 NInfer（体验用）。改回 MiniMax 只需把下面两行换成 provider: minimax / model: MiniMax-M3
+- id: agent-default-model
+  config:
+    provider: ninfer-local
+    model: qwen3.8-27b-ninfer
+    reasoningEffort: low

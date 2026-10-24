@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# ninfer 控制台 — 本机 AI 服务的一键管理 + 监控
+# 服务由 systemd 用户服务托管（开机自启、崩溃自恢复），本脚本用于手动控制与观察。
+# 双引擎互斥：日常 ninfer-serve(:8091) / 满血 ninfer-serve-full(:8092)，用 ninfer-mode 切换。
+# 用法: ninfer-ctl [start|stop|restart|status|mon|logs|snap|full|daily]
+CORE=(codex-model-gateway billion-context dsh-web)
+
+svc() { systemctl --user "$@"; }
+
+engine_unit() {
+    if svc is-active --quiet ninfer-serve-full; then echo ninfer-serve-full
+    elif svc is-active --quiet ninfer-serve; then echo ninfer-serve
+    else echo ""; fi
+}
+
+status_lines() {
+    eu=$(engine_unit)
+    if [[ -n "$eu" ]]; then echo "  ✔ 引擎: $eu $( [[ $eu == ninfer-serve-full ]] && echo '(满血 249K)' || echo '(日常 180K)' )"
+    else echo "  ✘ 引擎: 未运行（ninfer-mode full|daily 启动）"; fi
+    for s in "${CORE[@]}"; do
+        st=$(svc is-active "$s" 2>/dev/null)
+        [[ "$st" == "active" ]] && echo "  ✔ $s" || echo "  ✘ $s ($st)"
+    done
+    echo "  GPU: $(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader -i 0 2>/dev/null || echo 'N/A')"
+}
+
+do_start()  { eu=$(engine_unit); [[ -n $eu ]] && svc start "$eu"; svc start "${CORE[@]}"; echo "已发出启动指令（满血引擎约 100 秒，日常约 40 秒）"; }
+do_stop()   { svc stop ninfer-serve ninfer-serve-full "${CORE[@]}" 2>/dev/null; echo "已全部停止"; }
+do_restart(){ eu=$(engine_unit); [[ -n $eu ]] && svc restart "$eu"; svc restart "${CORE[@]}"; echo "已重启"; }
+do_mon()    { ninfer-mon; }
+do_logs()   { eu=$(engine_unit); journalctl --user -u "${eu:-ninfer-serve}" -f; }
+do_snap()   { ninfer-mon --once; }
+
+menu() {
+    while true; do
+        clear
+        echo "══════════ ninfer 控制台 ══════════"
+        status_lines
+        echo "────────────────────────────────────"
+        echo "  [1] 启动全部    [2] 停止全部    [3] 重启全部"
+        echo "  [4] 实时监控台  [5] 滚动日志    [6] 性能快照"
+        echo "  [7] 切满血版    [8] 切日常版"
+        echo "  [0] 退出"
+        echo -n "请选择: "
+        read -r c
+        case "$c" in
+            1) do_start;  read -p "回车继续..." ;;
+            2) do_stop;   read -p "回车继续..." ;;
+            3) do_restart; read -p "回车继续..." ;;
+            4) do_mon ;;
+            5) do_logs ;;
+            6) do_snap;  read -p "回车继续..." ;;
+            7) ninfer-mode full;  read -p "回车继续..." ;;
+            8) ninfer-mode daily; read -p "回车继续..." ;;
+            0) exit 0 ;;
+            *) echo "无效选择" ; sleep 1 ;;
+        esac
+    done
+}
+
+case "${1:-menu}" in
+    start)   do_start ;;
+    stop)    do_stop ;;
+    restart) do_restart ;;
+    status)  status_lines ;;
+    mon)     do_mon ;;
+    logs)    do_logs ;;
+    snap)    do_snap ;;
+    full)    ninfer-mode full ;;
+    daily)   ninfer-mode daily ;;
+    menu|*)  menu ;;
+esac

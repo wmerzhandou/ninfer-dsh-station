@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# ninfer-mode.sh — 日常/满血双引擎切换（显存互斥，一次只能跑一台）
+# 用法: ninfer-mode daily|full|status
+# 架构：两台引擎都注册进 codex-model-gateway 的 ninfer 臂（对外统一 slug
+#       qwen3.8-27b-ninfer，网关内部改写为各引擎真实 id），bili/codex/dsh
+#       全部走 127.0.0.1:18003，切换引擎对上游客户端完全透明。
+set -euo pipefail
+
+is_daily() { systemctl --user is-active --quiet ninfer-serve; }
+is_full()  { systemctl --user is-active --quiet ninfer-serve-full; }
+
+status() {
+    if is_daily; then echo "当前: 日常引擎 :8091 (180K, 98tok/s, bili生态全接入)"
+    elif is_full; then echo "当前: 满血引擎 :8092 (249K, 236-321tok/s, DFlash2)"
+    else echo "当前: 无引擎运行"; fi
+}
+
+set_bili_window() {
+    python3 - "$1" <<'PYEOF'
+import json,sys
+w=int(sys.argv[1])
+p='/home/ub/.config/billion-context/billion-context.json'
+d=json.load(open(p))
+d['compress']['modelContextLimit']=w
+d['modelContextLimit']=w
+for k in d['providers']:
+    d['providers'][k]['compress']['modelContextLimit']=w
+    for m in d['providers'][k].get('models',{}).values():
+        m['context']=w
+json.dump(d,open(p,'w'),indent=2,ensure_ascii=False)
+PYEOF
+    systemctl --user restart billion-context
+}
+
+wait_engine() {  # $1=端口 $2=名字
+    for i in $(seq 1 60); do
+        curl -s --max-time 2 "http://127.0.0.1:$1/v1/models" >/dev/null 2>&1 && { echo "$2 已就绪"; return 0; }
+        sleep 2
+    done
+    echo "$2 120 秒内未就绪，查日志: journalctl --user -u $3 -n 50" >&2; return 1
+}
+
+to_full() {
+    if is_full; then echo "满血已在运行"; return; fi
+    set_bili_window 245760
+    is_daily && { systemctl --user stop ninfer-serve; sleep 4; }
+    systemctl --user start ninfer-serve-full
+    wait_engine 8092 满血引擎 ninfer-serve-full
+}
+
+to_daily() {
+    if is_daily; then echo "日常已在运行"; return; fi
+    set_bili_window 180224
+    is_full && { systemctl --user stop ninfer-serve-full; sleep 4; }
+    systemctl --user start ninfer-serve
+    wait_engine 8091 日常引擎 ninfer-serve
+}
+
+case "${1:-status}" in
+    full)  to_full ;;
+    daily) to_daily ;;
+    *)     status ;;
+esac

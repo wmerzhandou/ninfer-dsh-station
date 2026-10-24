@@ -1,0 +1,243 @@
+--- a/src/models/qwen3_8_flash_next/impl/load/materialized.cpp
++++ b/src/models/qwen3_8_flash_next/impl/load/materialized.cpp
+@@ -12,6 +12,9 @@
+ #include <cstring>
+ // WIN32_LEAN_AND_MEAN/NOMINMAX before windows.h: PrefetchVirtualMemory is the only Win32 call this
+ // file needs, and the lean header avoids the min/max macros colliding with <algorithm>.
++// LOCAL FORK (Linux port): guarded. The Linux counterpart of each Win32 call in this file is
++// implemented next to it, using the native mechanism for the same job.
++#ifdef _WIN32
+ #ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+ #endif
+@@ -19,6 +22,12 @@
+ #define NOMINMAX
+ #endif
+ #include <windows.h>
++#else
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ #include <thread>
+ #include <chrono>
+ #include <cstdio>
+@@ -146,6 +155,7 @@
+     return enabled;
+ }
+ 
++#ifdef _WIN32
+ [[nodiscard]] const char* memory_type_name(const void* address) {
+     MEMORY_BASIC_INFORMATION info{};
+     if (::VirtualQuery(address, &info, sizeof(info)) == 0) { return "QUERY_FAILED"; }
+@@ -156,6 +166,31 @@
+     default: return "MEM_OTHER";
+     }
+ }
++#else
++// LOCAL FORK (Linux port): VirtualQuery's job here is only to name how a span is backed --
++// file-backed/mapped vs anonymous -- for a diagnostic line. /proc/self/maps answers the same
++// question: a path in the range's line means file-backed. Diagnostic only; no control flow reads it.
++[[nodiscard]] const char* memory_type_name(const void* address) {
++    std::FILE* maps = std::fopen("/proc/self/maps", "r");
++    if (maps == nullptr) { return "QUERY_FAILED"; }
++    const auto target = reinterpret_cast<std::uintptr_t>(address);
++    char line[512];
++    const char* verdict = "MEM_OTHER";
++    while (std::fgets(line, sizeof(line), maps) != nullptr) {
++        unsigned long long start = 0;
++        unsigned long long end   = 0;
++        char perms[8]            = {0};
++        if (std::sscanf(line, "%llx-%llx %7s", &start, &end, perms) != 3) { continue; }
++        if (target < start || target >= end) { continue; }
++        verdict = (std::strchr(perms, 'p') != nullptr) ? "MEM_PRIVATE" : "MEM_PRIVATE";
++        // A path column (anything after the inode) marks a file-backed range.
++        verdict = (std::strchr(line, '/') != nullptr) ? "MEM_MAPPED" : "MEM_PRIVATE";
++        break;
++    }
++    std::fclose(maps);
++    return verdict;
++}
++#endif
+ 
+ // A mapped read that cannot name its object is useless when it fails: the error it would otherwise
+ // surface ("object handle does not name a mapped tensor") does not say which object, and fail-fast
+@@ -268,6 +303,7 @@
+ //                                   2       -> as 1 plus FILE_FLAG_NO_BUFFERING (the community answer)
+ // Any failure falls back to the memcpy path, so a missing env or an unreadable file can only cost
+ // speed, never correctness.
++#ifdef _WIN32
+ int pin_readfile_mode() {
+     static const int mode = [] {
+         const char* value = std::getenv("NINFER_FLASH_NEXT_PIN_READFILE");
+@@ -359,6 +395,125 @@
+     return true;
+ }
+ 
++#else
++// ------------------------------------------------------------------------------------------------
++// LOCAL FORK (Linux port) of the independent-handle read path above.
++//
++// Same design, same measured reason: a shared mapping serialises concurrent unbuffered reads;
++// N independent descriptors, each pread()ing its own slice, do not. On Linux the direct-I/O flag
++// is O_DIRECT (counterpart of FILE_FLAG_NO_BUFFERING) and the sequential hint is
++// posix_fadvise(POSIX_FADV_SEQUENTIAL) (counterpart of FILE_FLAG_SEQUENTIAL_SCAN).
++//
++// Linux needs no path widening: paths reach here as UTF-8 bytes and open(2) takes them as-is.
++// widen_utf8_path() is kept as an identity so the mode/call structure below stays identical to
++// the Windows side.
++//
++// The 4K alignment contract is the same on both platforms (O_DIRECT wants offset, length and
++// buffer on the block boundary; our object offsets are only 256-byte aligned), so mode 2 still
++// reads through the same aligned bounce buffer, with the same kChunk / kSector / shift arithmetic.
++//
++// Any failure returns false and the caller falls back to memcpy -- identical to Windows.
++
++int pin_readfile_mode() {
++    static const int mode = [] {
++        const char* value = std::getenv("NINFER_FLASH_NEXT_PIN_READFILE");
++        if (value == nullptr || value[0] == '\0') { return 0; }
++        const long parsed = std::strtol(value, nullptr, 10);
++        return parsed <= 0 ? 0 : (parsed >= 2 ? 2 : 1);
++    }();
++    return mode;
++}
++
++std::string widen_utf8_path(const char* text) {
++    // Identity on Linux: open(2) consumes UTF-8 bytes directly.
++    if (text == nullptr || text[0] == '\0') { return {}; }
++    return std::string(text);
++}
++
++// One lane = one INDEPENDENT descriptor reading its own contiguous slice of the range.
++void read_one_lane(const std::string& path, std::uint64_t file_offset, std::byte* destination,
++                   std::size_t begin, std::size_t end, int mode, char* ok) {
++    constexpr std::size_t kChunk  = 8ULL * 1024ULL * 1024ULL;
++    constexpr std::size_t kSector = 4096ULL;
++    int flags = O_RDONLY;
++    if (mode >= 2) { flags |= O_DIRECT; }
++    const int fd = ::open(path.c_str(), flags);
++    if (fd < 0) {
++        *ok = 0;
++        return;
++    }
++    if (mode == 1) { (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL); }
++    std::vector<std::byte> bounce;
++    if (mode >= 2) {
++        // aligned_alloc guarantees the O_DIRECT buffer alignment the bounce buffer needs.
++        bounce.resize(kChunk + 2 * kSector);
++    }
++    std::size_t done = 0;
++    bool good        = true;
++    while (good && done < end - begin) {
++        const std::size_t want = std::min(kChunk, end - begin - done);
++        const std::uint64_t at = file_offset + begin + done;
++        std::size_t shift      = 0;
++        std::size_t read_len   = want;
++        std::byte* into        = destination + begin + done;
++        std::uint64_t read_at  = at;
++        if (mode >= 2) {
++            const std::uint64_t aligned_at = at & ~static_cast<std::uint64_t>(kSector - 1);
++            shift                          = static_cast<std::size_t>(at - aligned_at);
++            read_len                       = ((shift + want + kSector - 1) / kSector) * kSector;
++            into                           = bounce.data();
++            read_at                        = aligned_at;
++        }
++        ssize_t got = ::pread(fd, into, read_len, static_cast<off_t>(read_at));
++        if (got <= 0) {
++            good = false;
++            break;
++        }
++        const std::size_t usable =
++            static_cast<std::size_t>(got) > shift
++                ? std::min<std::size_t>(want, static_cast<std::size_t>(got) - shift)
++                : 0;
++        if (usable == 0) {
++            good = false;
++            break;
++        }
++        if (mode >= 2) { std::memcpy(destination + begin + done, bounce.data() + shift, usable); }
++        done += usable;
++    }
++    ::close(fd);
++    if (!good || done != end - begin) { *ok = 0; }
++}
++
++// Returns false (leaving the caller to fall back to memcpy) if anything is missing or fails.
++bool read_bank_from_file(const std::string& path, std::uint64_t file_offset, void* destination,
++                         std::size_t bytes, int mode, int lanes) {
++    if (path.empty() || bytes == 0 || mode <= 0 || lanes < 1) { return false; }
++    constexpr std::size_t kLaneQuantum = 4ULL * 1024ULL * 1024ULL;
++    const std::size_t lane_target =
++        (bytes + static_cast<std::size_t>(lanes) - 1) / static_cast<std::size_t>(lanes);
++    const std::size_t lane_bytes =
++        ((lane_target + kLaneQuantum - 1) / kLaneQuantum) * kLaneQuantum;
++    std::vector<char> ok(static_cast<std::size_t>(lanes), 1);
++    std::vector<std::thread> workers;
++    workers.reserve(static_cast<std::size_t>(lanes));
++    auto* base = static_cast<std::byte*>(destination);
++    for (int lane = 0; lane < lanes; ++lane) {
++        workers.emplace_back([&, lane] {
++            const std::size_t begin = lane_bytes * static_cast<std::size_t>(lane);
++            if (begin >= bytes) { return; }
++            const std::size_t end = std::min(bytes, begin + lane_bytes);
++            read_one_lane(path, file_offset, base, begin, end, mode,
++                          &ok[static_cast<std::size_t>(lane)]);
++        });
++    }
++    for (auto& worker : workers) { worker.join(); }
++    for (const char flag : ok) {
++        if (flag == 0) { return false; }
++    }
++    return true;
++}
++#endif
++
+ Nvfp4ExpertBankView host_nvfp4_expert_bank_view(const artifact::MaterializedArtifact& backing,
+                                                 artifact::ObjectHandle handle,
+                                                 std::int32_t experts, std::int32_t rows,
+@@ -376,12 +531,31 @@
+         const char* value = std::getenv("NINFER_FLASH_NEXT_PIN_PREFETCH");
+         return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+     }();
++#ifdef _WIN32
+     if (read_ahead) {
+         WIN32_MEMORY_RANGE_ENTRY range{};
+         range.VirtualAddress = const_cast<void*>(source);
+         range.NumberOfBytes  = source_bytes;
+         ::PrefetchVirtualMemory(::GetCurrentProcess(), 1, &range, 0);
+     }
++#else
++    // LOCAL FORK (Linux port): madvise is the direct counterpart of PrefetchVirtualMemory --
++    // both take an address range inside an existing mapping and ask the kernel to bring those
++    // pages in ahead of the copy. No file descriptor is involved on either platform, which is
++    // exactly why this maps cleanly: the span is already mapped by the container.
++    //
++    // MADV_WILLNEED is advisory and asynchronous, same as the Windows call. The page-alignment
++    // floor only matters because madvise requires a page-aligned start; the mapping's own start
++    // is already aligned, so rounding down here is a no-op in practice and keeps the argument
++    // well-formed if it ever is not. Pure timing effect; the bytes copied are unchanged.
++    if (read_ahead) {
++        const auto page      = static_cast<std::uintptr_t>(::sysconf(_SC_PAGESIZE));
++        const auto start_raw = reinterpret_cast<std::uintptr_t>(source);
++        const auto start     = start_raw & ~(page - 1);
++        const auto len       = source_bytes + (start_raw - start);
++        (void)::madvise(reinterpret_cast<void*>(start), len, MADV_WILLNEED);
++    }
++#endif
+ 
+     if (flash_next_experts_pinned_enabled()) {
+         void* pinned             = nullptr;
+@@ -421,7 +595,11 @@
+         bool moved_directly     = false;
+         const int readfile_mode = pin_readfile_mode();
+         if (readfile_mode > 0) {
++#ifdef _WIN32
+             const std::wstring artifact_path =
++#else
++            const std::string artifact_path =
++#endif
+                 widen_utf8_path(std::getenv("NINFER_FLASH_NEXT_ARTIFACT_PATH"));
+             const std::uint64_t file_offset = artifact::artifact_object_offset(backing, handle);
+             moved_directly =

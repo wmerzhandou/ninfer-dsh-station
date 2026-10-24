@@ -1,0 +1,9 @@
+# 注意：Exec 改成你的实际安装路径
+[Desktop Entry]
+Type=Application
+Name=启动dsh（AI对话）
+Comment=等待AI服务就绪后自动打开 dsh 网页版
+Exec=/home/ub/ninfer-dsh-station/deploy/bin/dsh-launch.sh
+Icon=web-browser
+Terminal=true
+Categories=Utility;

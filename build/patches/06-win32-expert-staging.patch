@@ -1,0 +1,71 @@
+--- a/src/models/qwen3_8_flash_next/impl/expert_staging.cpp	2026-10-19 17:22:00.000000000 +0800
++++ b/src/models/qwen3_8_flash_next/impl/expert_staging.cpp	2026-10-20 21:11:14.022337450 +0800
+@@ -60,10 +60,38 @@
+ // in a fixed order (ReadOperation, WriteOperation, OtherOperation, ReadTransfer, WriteTransfer,
+ // OtherTransfer). If the call fails we return 0 and the printed residual says so out loud, instead of
+ // silently reporting "no disk reads".
++#ifdef _WIN32
+ extern "C" __declspec(dllimport) void* __stdcall GetCurrentProcess();
+ extern "C" __declspec(dllimport) int __stdcall GetProcessIoCounters(void* process, void* counters);
++#endif
++
++#ifndef _WIN32
++// LOCAL FORK (Linux port): the Windows pair above reads IO_COUNTERS.ReadTransferCount, "bytes this
++// process pulled from storage". The Linux equivalent of that exact quantity is the read_bytes field
++// of /proc/self/io (bytes this process caused the block layer to fetch). Same question, same answer,
++// native mechanism -- not a stub. Called once per profiling window, not per token.
++namespace {
++bool linux_proc_read_bytes(std::uint64_t& out) noexcept {
++    std::FILE* f = std::fopen("/proc/self/io", "r");
++    if (f == nullptr) { return false; }
++    bool found = false;
++    char line[256];
++    while (std::fgets(line, sizeof(line), f) != nullptr) {
++        unsigned long long parsed = 0;
++        if (std::sscanf(line, "read_bytes: %llu", &parsed) == 1) {
++            out   = static_cast<std::uint64_t>(parsed);
++            found = true;
++            break;
++        }
++    }
++    std::fclose(f);
++    return found;
++}
++}  // namespace
++#endif
+ 
+ std::uint64_t process_read_transfer_bytes() {
++#ifdef _WIN32
+     struct IoCounters {
+         unsigned long long read_operation_count;
+         unsigned long long write_operation_count;
+@@ -74,6 +102,10 @@
+     } counters{};
+     if (GetProcessIoCounters(GetCurrentProcess(), &counters) == 0) { return 0; }
+     return static_cast<std::uint64_t>(counters.read_transfer_count);
++#else
++    std::uint64_t bytes = 0;
++    return linux_proc_read_bytes(bytes) ? bytes : 0;
++#endif
+ }
+ 
+ // R6 of block 1: the first run of the line below printed disk_mib=0.000 AND io_read_mib=0.000 in all
+@@ -83,6 +115,7 @@
+ // needs to compare against (a run that is KNOWN to read storage, e.g. PIN=1 loading 63.3 GiB, must
+ // move that baseline). Two zeros with an unproven instrument are not a reading.
+ bool process_io_query_ok() {
++#ifdef _WIN32
+     struct IoCounters {
+         unsigned long long read_operation_count;
+         unsigned long long write_operation_count;
+@@ -92,6 +125,10 @@
+         unsigned long long other_transfer_count;
+     } counters{};
+     return GetProcessIoCounters(GetCurrentProcess(), &counters) != 0;
++#else
++    std::uint64_t ignored = 0;
++    return linux_proc_read_bytes(ignored);
++#endif
+ }
+ 
+ struct StageProfile {

@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""ninfer 监控台 — ninfer-serve 一体化监控。
+
+一屏显示：服务/GPU 状态 | 最近30请求滚动统计 | 实时请求流
+用法: ninfer-mon            # 实时监控台（q 退出）
+      ninfer-mon --once     # 打印一帧快照（用于排查/远程查看）
+"""
+import re, subprocess, sys, time, curses
+
+def _active_unit():
+    """日常/满血两引擎互斥，谁在跑就监控谁（都跑/都没跑时取日常）。"""
+    for u in ("ninfer-serve", "ninfer-serve-full"):
+        try:
+            subprocess.run(["systemctl", "--user", "is-active", "--quiet", u], check=True)
+            return u
+        except Exception:
+            pass
+    return "ninfer-serve"
+
+UNIT = _active_unit()
+
+def sh(args):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return ""
+
+def journal_recent(n=400):
+    return sh(["journalctl", "--user", "-u", UNIT, "--since", "20 min ago", "--no-pager", "-o", "cat",
+               "-g", r"req#[0-9]+ done|throughput \|.*prefill|server stopped|Started NInfer"])
+
+REQ_RE = re.compile(
+    r"req#(\d+) done \| .*?prompt ([\d,]+) \| output ([\d,]+) \| cache [\d,]+ \(([\d.]+)%"
+    r".*?TTFT ([\d.]+)(ms|s|m ?)?(?: ([\d.]+)s)? .*?prefile", re.S)
+
+LINE_RE = re.compile(
+    r"req#(\d+) done.*?prompt ([\d,]+) \| output ([\d,]+) \| cache [\d,]+ \(([\d.]+)%"
+    r".*?TTFT ([^|]+)\| total ([^|]+)\|.*?prefill ([^|]+)\| decode ([^|]+)\|", re.S)
+
+def t2s(t):
+    t = t.strip().replace(" ", "")
+    m = re.match(r"(?:(\d+)m )?([\d.]+)s", t)
+    if m: return (int(m.group(1) or 0)) * 60 + float(m.group(2))
+    m = re.match(r"([\d.]+)ms", t)
+    if m: return float(m.group(1)) / 1000
+    m = re.match(r"([\d.]+)s", t)
+    return float(m.group(1)) if m else None
+
+TPUT_RE = re.compile(
+    r"throughput \| [^|]*\| prefill ([\d.]+) tok/s \(([,\d]+) tok\) \| running (\d+)(?: \(prefill (\d+)\))? \| waiting (\d+) \| host ([\d.]+)%")
+
+def parse(lines):
+    reqs = []
+    restarted = None
+    ts_re = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+    for ln in lines:
+        if "server stopped" in ln or "Started NInfer" in ln:
+            reqs.clear()
+            mts = ts_re.search(ln)
+            restarted = mts.group(0) if mts else "（systemd，时间未记录）"
+            continue
+        m = LINE_RE.search(ln)
+        if not m:
+            continue
+        req, prompt, out, cache, ttft, total = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
+        prefill = m.group(7).strip().replace("tok/s", "")
+        decode = m.group(8).strip().replace("tok/s", "")
+        def f(x):
+            x = x.replace(",", "").strip()
+            try:
+                return float(x[:-1]) * 1000 if x.endswith("k") else float(x)
+            except Exception:
+                return None
+        reqs.append(dict(req=req, prompt=int(prompt.replace(",", "")),
+                         output=int(out.replace(",", "")), cache=float(cache),
+                         ttft=t2s(ttft), total=t2s(total),
+                         prefill=f(prefill), decode=f(decode)))
+    cur = None
+    for ln in reversed(lines):
+        t = TPUT_RE.search(ln)
+        if t:
+            cur = dict(rate=float(t.group(1)), tok=int(t.group(2).replace(",", "")),
+                       running=int(t.group(3)), prefill_n=int(t.group(4) or 0),
+                       waiting=int(t.group(5)), host=float(t.group(6)))
+            break
+    return reqs, cur, restarted
+
+def gpu():
+    out = sh(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "-i", "0",
+              "--format=csv,noheader"]).strip()
+    return out if out else "-"
+
+def active():
+    return sh(["systemctl", "--user", "is-active", UNIT]).strip()
+
+def frame(reqs, cur=None, restarted=None):
+    w = reqs[-30:]
+    hit = sum(1 for r in w if r["cache"] > 50)
+    def avg(k):
+        vals = [r[k] for r in w if r[k] is not None]
+        return sum(vals) / len(vals) if vals else 0
+    L = []
+    L.append(f"服务: {active()}   GPU(利用率%/显存): {gpu()}   {time.strftime('%H:%M:%S')}")
+    if restarted:
+        L.append(f"⟳ 引擎曾于 {restarted[11:] if restarted[:2].isdigit() else restarted} 重启，以下统计只含重启后实例")
+    if cur:
+        L.append(f"⚡进行中: running {cur['running']} (prefill {cur['prefill_n']})  waiting {cur['waiting']}   "
+                 f"5s预填 {cur['rate']:.0f} tok/s ({cur['tok']} tok)   host KV {cur['host']:.0f}%")
+    if w:
+        L.append(f"近{len(w)}请求: 缓存命中率 {hit/len(w)*100:.0f}%   "
+                 f"平均TTFT {avg('ttft'):.1f}s   平均prefill {avg('prefill'):.0f} tok/s   "
+                 f"平均decode {avg('decode'):.0f} tok/s")
+        L.append(f"累计: prompt {sum(r['prompt'] for r in w)/1000:.0f}K tok / output {sum(r['output'] for r in w)} tok")
+    L.append("─" * 96)
+    def fmt(v, nd=1):
+        return f"{v:.{nd}f}" if isinstance(v, (int, float)) else "-"
+    for r in reqs[-8:]:
+        L.append(f"req#{r['req']:<5} TTFT {fmt(r['ttft']):>7}  prefill {fmt(r['prefill'],0):>7} tok/s  "
+                 f"decode {fmt(r['decode'],0):>5} tok/s  缓存 {r['cache']:>5.1f}%  "
+                 f"prompt {r['prompt']:>7,} / out {r['output']}")
+    return L
+
+def once():
+    for line in frame(*parse(journal_recent().splitlines())):
+        print(line)
+
+def live(stdscr):
+    curses.curs_set(0)
+    stdscr.timeout(2000)
+    while True:
+        reqs, cur, restarted = parse(journal_recent().splitlines())
+        stdscr.erase()
+        try:
+            for i, line in enumerate(frame(reqs, cur, restarted)):
+                stdscr.addnstr(i, 0, line, curses.COLS - 1)
+            stdscr.addnstr(curses.LINES - 1, 0, f"q 退出 | 数据: journalctl --user -u {UNIT}", curses.COLS - 1)
+        except curses.error:
+            pass
+        stdscr.refresh()
+        if stdscr.getch() in (ord("q"), ord("Q")):
+            break
+        time.sleep(2)
+
+if __name__ == "__main__":
+    if "--once" in sys.argv:
+        once()
+    else:
+        curses.wrapper(live)
