@@ -231,25 +231,55 @@ systemctl --user is-enabled ninfer-serve-full codex-model-gateway billion-contex
 
 ## 附录A：模型文件获取（唯一需要用户自己准备的东西）
 
-目标文件：`qwen3_8_27b.ninfer`（约 18GB）。来源：Qwen3.8-27B 官方权重 → ninfer 转换器。
+目标文件：`qwen3_8_27b.ninfer`（17.7 GiB）。**两条路，强烈推荐路线 1**（本方案实测机就是路线 1 拿的）。
+
+### 路线 1：下载上游官方转换件（推荐，相当于"官方替你转换好了"）
+
+上游把转换好的工件发布在 HuggingFace（`WarlaxZ/Qwen3.8-27B-NInfer-3090`，配方 `qwen3_8_27b`：
+imatrix 加权分组量化、4bit embedding、6bit head，含视觉/MTP/DFlash2 权重），一键脚本下载，
+断点续传 + SHA256 校验：
 
 ```bash
-# A.1 下载官方权重（国内用 modelscope，约 55GB 磁盘占用，下完转换可删）
-pip install modelscope
-modelscope download --model Qwen/Qwen3.8-27B --local_dir ~/models/qwen38-src
-# （模型名以 Qwen 官方实际发布的为准；若 HuggingFace 可达也可用 hf download）
+# 装 aria2 提速（可选但强烈建议：单线程 curl 对这些工件可能只有 ~1MB/s）
+sudo apt install -y aria2
 
-# A.2 转换（按 Don-Chad/ninfer-3090 的转换文档执行，命令示意为）
-#   <引擎源码树>/tools/convert ... 输出 ~/models/qwen3_8_27b.ninfer
-# 具体参数见上游 docs/ 的 conversion 指南；转换需要 ~40GB 临时磁盘。
+git clone --depth 1 https://github.com/Don-Chad/ninfer-3090.git
+cd ninfer-3090
 
-# A.3 填入配置
-echo "MODEL_PATH=$HOME/models/qwen3_8_27b.ninfer" >> config.env
-systemctl --user edit ninfer-serve-full   # 加 Environment=NINFER_MODEL=<该路径>
-systemctl --user restart ninfer-serve-full
+# 国内无 HuggingFace 直连：换镜像域名后再跑（二选一）
+# sed -i 's|https://huggingface.co|https://hf-mirror.com|' scripts/download-model.sh
+
+./download-model.sh qwen38-27b     # ~18GB，产物在 models/qwen3_8_27b.ninfer
 ```
 
-如果用户拿到的是别人转换好的 `.ninfer` 文件（社区分享），直接校验 SHA256 后放 MODEL_PATH 即可。
+【验证】脚本自校验大小+SHA256，成功时打印 OK。然后：
+```bash
+mkdir -p ~/models && cp models/qwen3_8_27b.ninfer ~/models/
+echo "MODEL_PATH=$HOME/models/qwen3_8_27b.ninfer" >> config.env
+systemctl --user edit ninfer-serve-full   # [Service] 段加 Environment=NINFER_MODEL=<该路径>
+```
+【排错】下载反复失败 → 检查代理/换镜像；磁盘不足 → 需要 ~20GB 空闲。
+
+### 路线 2：从官方权重自行转换（需要源码树 + Python3.11/PyTorch + ~60GB 临时磁盘）
+
+```bash
+# 在打完本仓库 build/patches 的 Don-Chad/ninfer-3090 源码树根目录：
+python3 -m tools.convert \
+  --model /path/to/Qwen3.8-27B \
+  --recipe qwen3_8_27b \
+  --source imatrix=qwen3_8_27b.imatrix.safetensors \
+  --source dflash2=/path/to/Qwen3.8-27B-DFlash2 \
+  --components text,vision,mtp,dflash2 \
+  --proposal \
+  --name qwen3.8-27b \
+  --out ~/models/qwen3_8_27b.ninfer
+```
+完整参数与原理见上游 `docs/weight-conversion.md`。可用 `--device cpu`（慢）或 CUDA。
+【排错】缺 imatrix/dflash2 源文件 → 上游文档有各 recipe 源文件清单；中断 → 重跑同命令会复用中间产物。
+
+### 社区分享件
+
+若用户从可信渠道拿到转换好的 .ninfer，核对 SHA256 后放 MODEL_PATH 即可。
 
 ## 附录B：源码构建引擎（Release 不可用时的兜底）
 
