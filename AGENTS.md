@@ -286,7 +286,7 @@ python3 -m tools.convert \
 ```bash
 git clone https://github.com/Don-Chad/ninfer-3090.git ninfer-src
 cd ninfer-src && git checkout d8c2925
-git apply <仓库>/build/patches/*.patch
+# 注意：不要打 patches-legacy-daily/ 下的补丁（上游已等价合入，打了会失败）
 cp <仓库>/build/build-full.sh .
 bash build-full.sh            # Docker 构建，30–60 分钟
 # 产物按 build/BUILD.md 归位（dist/ 与 rootfs/）
